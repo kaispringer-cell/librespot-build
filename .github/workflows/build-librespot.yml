@@ -1,0 +1,67 @@
+name: librespot für Phoniebox bauen (arm64, ALSA)
+
+on:
+  workflow_dispatch: {}
+
+env:
+  LIBRESPOT_VERSION: v0.8.0
+  RUST_TOOLCHAIN: 1.90.0
+  LIBRESPOT_FEATURES: "native-tls alsa-backend with-libmdns"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: System-Abhängigkeiten installieren
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libasound2-dev libssl-dev protobuf-compiler git ca-certificates
+
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} installieren
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            https://static.rust-lang.org/rustup/dist/aarch64-unknown-linux-gnu/rustup-init -o rustup-init
+          chmod 700 rustup-init
+          ./rustup-init -y --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: librespot ${{ env.LIBRESPOT_VERSION }} klonen
+        run: |
+          git clone --depth 1 --branch "$LIBRESPOT_VERSION" https://github.com/librespot-org/librespot.git source
+          git -C source fetch --depth 1 origin tag "$LIBRESPOT_VERSION"
+          git -C source checkout --detach "$LIBRESPOT_VERSION"
+          git -C source rev-parse HEAD
+
+      - name: Bauen (${{ env.LIBRESPOT_FEATURES }})
+        run: |
+          cargo build --manifest-path source/Cargo.toml --release --locked \
+            --no-default-features --features "$LIBRESPOT_FEATURES"
+
+      - name: ALSA-Backend prüfen
+        run: |
+          backends=$(source/target/release/librespot --backend '?' 2>&1 || true)
+          echo "Verfügbare Backends: $backends"
+          echo "$backends" | grep -q alsa
+
+      - name: Artefakt benennen und Prüfsumme erzeugen
+        run: |
+          artifact="phoniebox-librespot-${LIBRESPOT_VERSION}-arm64"
+          cp source/target/release/librespot "$artifact"
+          sha256sum "$artifact" > "${artifact}.sha256"
+          echo "ARTIFACT=$artifact" >> "$GITHUB_ENV"
+
+      - name: Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: librespot-${{ env.LIBRESPOT_VERSION }}-arm64
+          name: librespot ${{ env.LIBRESPOT_VERSION }} (arm64, ALSA)
+          body: |
+            Fertig gebautes `librespot` ${{ env.LIBRESPOT_VERSION }} für arm64
+            (Raspberry Pi OS, Features: ${{ env.LIBRESPOT_FEATURES }}).
+          files: |
+            ${{ env.ARTIFACT }}
+            ${{ env.ARTIFACT }}.sha256
