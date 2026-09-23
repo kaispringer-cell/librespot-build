@@ -1,11 +1,24 @@
 name: librespot für Phoniebox bauen (arm64, ALSA)
 
+# Baut exakt dieselbe librespot-Version mit denselben Features, die
+# Phoniebox-Installer/build_librespot.sh bisher auf dem Pi selbst kompiliert
+# (native-tls alsa-backend with-libmdns), aber auf einem nativen arm64-Runner
+# statt auf einem Raspberry Pi - Minuten statt Stunden. Ergebnis landet als
+# GitHub-Release-Anhang, den install.sh künftig zuerst versucht herunterzuladen,
+# bevor es (als Rückfallebene) selbst auf dem Pi baut.
+#
+# Manuell auslösen: Reiter "Actions" -> "librespot für Phoniebox bauen" ->
+# "Run workflow". Läuft nicht automatisch bei jedem Push, weil die
+# librespot-Version hier bewusst fest eingetragen ist (siehe LIBRESPOT_VERSION) -
+# ein neuer Lauf ist nur nötig, wenn diese Version geändert wird.
+
 on:
   workflow_dispatch: {}
 
 env:
   LIBRESPOT_VERSION: v0.8.0
   RUST_TOOLCHAIN: 1.90.0
+  # native-tls alsa-backend with-libmdns: identisch zu build_librespot.sh
   LIBRESPOT_FEATURES: "native-tls alsa-backend with-libmdns"
 
 permissions:
@@ -13,6 +26,10 @@ permissions:
 
 jobs:
   build:
+    # Nativer arm64-Linux-Runner - kein Cross-Compiling, keine fehlenden
+    # arm64-Bibliotheken, kein QEMU. Erfordert einen GitHub-Plan mit Zugriff
+    # auf gehostete arm64-Runner (Stand heute: öffentliche Repos kostenlos,
+    # private je nach Plan).
     runs-on: ubuntu-24.04-arm
     steps:
       - name: System-Abhängigkeiten installieren
@@ -34,6 +51,7 @@ jobs:
           git clone --depth 1 --branch "$LIBRESPOT_VERSION" https://github.com/librespot-org/librespot.git source
           git -C source fetch --depth 1 origin tag "$LIBRESPOT_VERSION"
           git -C source checkout --detach "$LIBRESPOT_VERSION"
+          # Exakte Commit-ID im Log festhalten, falls der Tag später verschoben wird.
           git -C source rev-parse HEAD
 
       - name: Bauen (${{ env.LIBRESPOT_FEATURES }})
@@ -43,9 +61,16 @@ jobs:
 
       - name: ALSA-Backend prüfen
         run: |
-          backends=$(source/target/release/librespot --backend '?' 2>&1 || true)
-          echo "Verfügbare Backends: $backends"
-          echo "$backends" | grep -q alsa
+          # "--backend '?'" selbst wurde verworfen: list_backends() druckt über println! auf
+          # stdout und beendet den Prozess sofort mit exit(0) - bei einer Pipe (wie hier durch
+          # command substitution) wird stdout blockweise gepuffert, und process::exit()
+          # überspringt das Leeren dieses Puffers. Die Versionszeile kommt trotzdem an (die
+          # kommt über den log-Mechanismus auf stderr, sofort durchgereicht), aber die
+          # eigentliche Backend-Liste geht beim sofortigen Prozessende verloren - ein bekanntes
+          # Rust-Verhalten, kein Fehler im Build. Zuverlässiger: direkt prüfen, wogegen das
+          # Binary gelinkt wurde.
+          ldd source/target/release/librespot
+          ldd source/target/release/librespot | grep -q libasound
 
       - name: Artefakt benennen und Prüfsumme erzeugen
         run: |
@@ -62,6 +87,8 @@ jobs:
           body: |
             Fertig gebautes `librespot` ${{ env.LIBRESPOT_VERSION }} für arm64
             (Raspberry Pi OS, Features: ${{ env.LIBRESPOT_FEATURES }}).
+            Wird von Phoniebox-Installers `install.sh` automatisch heruntergeladen,
+            falls erreichbar; sonst baut der Installer wie bisher selbst auf dem Pi.
           files: |
             ${{ env.ARTIFACT }}
             ${{ env.ARTIFACT }}.sha256
